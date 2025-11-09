@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel", "setuptools_scm[toml]>=6.2"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "h5typer"
+version = "0.1.0"
+description = "Automatic type mapping for Python objects to HDF5"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+authors = [
+    {name = "Justin Chan", email = "chan.waisoon@qst.go.jp"},
+    {name = "Hidetoshi Kono", email = "kono.hidetoshi@qst.go.jp"}
+]
+keywords = ["hdf5", "type-mapping", "numpy", "pandas", "serialization"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "Intended Audience :: Developers",
+    "Topic :: Scientific/Engineering",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Operating System :: OS Independent",
+]
+
+dependencies = [
+    "numpy>=1.19.0",
+    "pandas>=1.0.0",
+    "h5py>=3.0.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/iQLS-MMS/h5typer"
+
+[tool.setuptools]
+packages = ["h5typer"]
+
