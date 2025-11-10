@@ -1,3 +1,12 @@
+name: Upload Python Package To Pypi
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
 jobs:
   release-build:
     runs-on: ubuntu-latest
