@@ -47,11 +47,15 @@ h5typer handles all the boilerplate, letting you focus on your data.
 git clone https://github.com/iQLS-MMS/h5typer.git
 cd h5typer
 pip install .
+
+
+# Install from PyPI
+pip install h5typer
 ```
 
 ### Requirements
 
-- Python >= 3.7
+- Python >= 3.10
 - numpy >= 1.19.0
 - pandas >= 1.0.0
 - h5py >= 3.0.0
@@ -158,7 +162,7 @@ h5typer automatically handles the following Python types:
 
 | Python Type | HDF5 Storage | Notes |
 |-------------|--------------|-------|
-| `numpy.ndarray` | Dataset | All dtypes supported, including object arrays |
+| `numpy.ndarray` | Dataset | All dtypes supported, excluding object arrays |
 | `pandas.DataFrame` | Group with datasets | Index, columns, and values preserved |
 | `pandas.Series` | Group with datasets | Index and values preserved |
 | `dict` | Group | Nested dictionaries become HDF5 groups |
@@ -276,18 +280,3 @@ MIT License
 ## Contributing
 
 Contributions are welcome! Please feel free to submit a Pull Request.
-
-## Changelog
-
-### Version 0.1.0
-- Initial release
-- Support for numpy arrays, pandas DataFrames/Series, None values
-- Nested dictionary support
-- Integer key preservation
-- Update functionality
-
-## See Also
-
-- **HiC-SCA**: Hi-C Spectral Compartment Analysis package using h5typer
-- **h5py**: Low-level HDF5 interface for Python
-- **pandas**: Data analysis library with HDF5 support
