@@ -31,7 +31,14 @@ Object-Oriented Usage
 >>> loaded = io_handler.load_data('output.h5')
 """
 
-__version__ = "0.1.0"
+from importlib.metadata import version, PackageNotFoundError
+
+try:
+    # Set from the git tag by setuptools-scm at install time
+    __version__ = version("h5typer")
+except PackageNotFoundError:
+    __version__ = "unknown"
+
 __author__ = "HiC-SCA Project"
 __license__ = "MIT"
 

@@ -24,7 +24,9 @@ class H5Typer:
 
     def __init__(self):
         """Initialize the data I/O handler."""
-        self.version = 1.0
+        # File format version: 1.1 stores MultiIndex levels and mixed-dtype
+        # DataFrame columns as separate arrays, and saves Series names
+        self.version = 1.1
 
     @staticmethod
     def _convert_npstr_to_byte(str_array: np.ndarray) -> np.ndarray:
@@ -55,6 +57,23 @@ class H5Typer:
         else:
             return current_array
 
+    @staticmethod
+    def _split_pandas_index(index: pd.Index) -> tuple:
+        """
+        Split a pandas Index into HDF5-storable arrays and names.
+
+        A MultiIndex is stored as one array per level (keys 'level_0', 'level_1', ...)
+        so each level keeps its own dtype, instead of an array of tuples which numpy
+        coerces to a single common dtype (e.g. integers become strings).
+        """
+        if isinstance(index, pd.MultiIndex):
+            levels = {f'level_{i}': index.get_level_values(i).to_numpy()
+                      for i in range(index.nlevels)}
+            names = {f'level_{i}': level_name for i, level_name in enumerate(index.names)}
+            return levels, names
+
+        return index.to_numpy(), index.name
+
     def _convert_to_h5_compatible(self, obj: Any) -> tuple:
         """
         Convert Python objects to HDF5-compatible format.
@@ -80,18 +99,26 @@ class H5Typer:
             data_type = 'dict'
 
         elif isinstance(obj, pd.core.generic.NDFrame):
-            values = obj.values
-            index = obj.index.values
-            name = obj.index.name
+            index, name = self._split_pandas_index(obj.index)
 
             if isinstance(obj, pd.DataFrame):
                 data_type = 'pandas dataframe'
-                columns = obj.columns.values
-                converted_obj = {'values': values, 'index': index, 'name': name, 'columns': columns}
+                columns, columns_name = self._split_pandas_index(obj.columns)
+
+                # Mixed column dtypes are stored one column per array (keys 'col_0',
+                # 'col_1', ...) so numpy does not coerce them to a common dtype
+                if len(set(obj.dtypes)) > 1:
+                    values = {f'col_{i}': obj.iloc[:, i].to_numpy() for i in range(obj.shape[1])}
+                else:
+                    values = obj.to_numpy()
+
+                converted_obj = {'values': values, 'index': index, 'name': name,
+                                 'columns': columns, 'columns_name': columns_name}
 
             elif isinstance(obj, pd.Series):
                 data_type = 'pandas series'
-                converted_obj = {'values': values, 'index': index, 'name': name}
+                converted_obj = {'values': obj.to_numpy(), 'index': index, 'name': name,
+                                 'series_name': obj.name}
 
         elif isinstance(obj, types.NoneType):
             data_type = 'None'
@@ -167,6 +194,24 @@ class H5Typer:
 
         return meta_dict, output_dict
 
+    @staticmethod
+    def _remove_h5_path(h5_file: h5py.File, address: str) -> None:
+        """
+        Remove the entry at address, or a dataset on its parent path that would
+        block creating it (e.g. an old scalar 'x' when writing 'x/y').
+        """
+        parts = address.strip('/').split('/')
+
+        for i in range(1, len(parts) + 1):
+            path = '/'.join(parts[:i])
+
+            if path not in h5_file:
+                return
+
+            if i == len(parts) or isinstance(h5_file[path], h5py.Dataset):
+                del h5_file[path]
+                return
+
     def save_data(self, filename: str, data_dict: Dict, update: bool = False) -> None:
         """
         Save nested dictionary to HDF5 file.
@@ -185,6 +230,17 @@ class H5Typer:
         meta_dict, flat_dict = self._flatten_dict(data_dict)
 
         with h5py.File(filename, write_mode) as h5_file:
+            if update:
+                # h5py cannot assign over existing entries, so clear what will be rewritten
+                for meta_address in meta_dict:
+                    data_address = meta_address[len('/__meta__'):]
+                    if data_address.strip('/'):
+                        self._remove_h5_path(h5_file, data_address)
+                        self._remove_h5_path(h5_file, meta_address)
+
+                if '__version__' in h5_file:
+                    del h5_file['__version__']
+
             h5_file.update(flat_dict)
             h5_file.update(meta_dict)
             h5_file['__version__'] = self.version
@@ -200,6 +256,10 @@ class H5Typer:
                 return self._convert_npbyte_to_str(obj)
             elif dtype_type == np.dtypes.StrDType:
                 return obj
+            elif (dtype_type == np.dtypes.ObjectDType and obj.size > 0
+                  and all(isinstance(x, bytes) for x in obj.flat)):
+                # Variable-length strings come back from h5py as bytes objects
+                return np.array([x.decode('utf-8') for x in obj.flat]).reshape(obj.shape)
 
         elif obj_type == bytes:
             return obj.decode('utf-8')
@@ -228,27 +288,59 @@ class H5Typer:
         """Handle empty dict reconstruction."""
         return {}
 
+    def _pandas_index_input_handler(self, index_address: str, name_address: str, data_dict: Dict) -> pd.Index:
+        """Rebuild a pandas Index or MultiIndex saved by _split_pandas_index."""
+        if index_address in data_dict:
+            index = self._auto_input_type_converter(data_dict[index_address])
+            name = self._auto_input_type_converter(data_dict.get(name_address))
+
+            # Older files store a MultiIndex as a single 2D array of tuples
+            if len(index.shape) > 1:
+                return pd.MultiIndex.from_arrays(index.T, names=name)
+
+            return pd.Index(index, name=name)
+
+        n_levels = 0
+        while f'{index_address}/level_{n_levels}' in data_dict:
+            n_levels += 1
+
+        levels = [self._auto_input_type_converter(data_dict[f'{index_address}/level_{i}'])
+                  for i in range(n_levels)]
+        names = [self._auto_input_type_converter(data_dict.get(f'{name_address}/level_{i}'))
+                 for i in range(n_levels)]
+        names = [n.item() if isinstance(n, np.generic) else n for n in names]
+
+        return pd.MultiIndex.from_arrays(levels, names=names)
+
     def _pandas_input_handler(self, data_type: str, var_name: str, data_dict: Dict):
         """Handle pandas DataFrame and Series reconstruction."""
-        values = data_dict[var_name + '/values']
-        name = self._auto_input_type_converter(data_dict[var_name + '/name'])
-        index = self._auto_input_type_converter(data_dict[var_name + '/index'])
-
-        if len(index.shape) > 1:
-            index = pd.MultiIndex.from_arrays(index.T, names=name)
-        else:
-            index = pd.Index(index, name=name)
+        index = self._pandas_index_input_handler(var_name + '/index', var_name + '/name', data_dict)
 
         if data_type == 'pandas series':
-            return pd.Series(values, index=index)
+            values = self._auto_input_type_converter(data_dict[var_name + '/values'])
+            series_name = self._auto_input_type_converter(data_dict.get(var_name + '/series_name'))
+
+            if isinstance(series_name, np.generic):
+                series_name = series_name.item()
+
+            return pd.Series(values, index=index, name=series_name)
 
         elif data_type == 'pandas dataframe':
-            columns = self._auto_input_type_converter(data_dict[var_name + '/columns'])
+            columns = self._pandas_index_input_handler(
+                var_name + '/columns', var_name + '/columns_name', data_dict
+            )
 
-            if len(columns.shape) > 1:
-                columns = pd.MultiIndex.from_arrays(columns.T)
+            if var_name + '/values' in data_dict:
+                values = self._auto_input_type_converter(data_dict[var_name + '/values'])
+                return pd.DataFrame(values, index=index, columns=columns)
 
-            return pd.DataFrame(values, index=index, columns=columns)
+            # Mixed-dtype frames are stored one array per column
+            col_arrays = [self._auto_input_type_converter(data_dict[f'{var_name}/values/col_{i}'])
+                          for i in range(len(columns))]
+            df = pd.DataFrame(dict(enumerate(col_arrays)), index=index)
+            df.columns = columns
+
+            return df
 
         else:
             raise ValueError(f"Invalid pandas data type: {data_type}")
@@ -331,8 +423,9 @@ class H5Typer:
             # Check version
             if '__version__' in h5_file:
                 version = h5_file['__version__'][()]
-                if version != self.version:
-                    print(f"Warning: File version {version} differs from current version {self.version}")
+                # Older formats are still readable; only newer ones may not be
+                if version > self.version:
+                    print(f"Warning: File version {version} is newer than supported version {self.version}")
 
             # Collect metadata and data
             meta_dict = {}
